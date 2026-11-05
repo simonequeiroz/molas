@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+~$*
+
+# Gráficos de versões antigas do programa (cálculo com as 5 cargas)
+molas/grafico_boxplot_K.png
+molas/grafico_dutil_x_L.png
