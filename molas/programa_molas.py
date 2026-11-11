@@ -1,10 +1,14 @@
 # ============================================================
 # Análise de molas sanfonadas de PLA impressas em 3D
-# Estrutura do modelo do professor: entrada -> cálculo por mola
-# -> intervalos de confiança -> apresentação -> gráficos
+# Ensaio de tração em máquina, referência ASTM D638
 #
-# Critério dos ensaios: quatro cargas menores e uma carga maior, até o escoamento.
-# A rigidez usa as quatro cargas menores; a maior carga caracteriza o escoamento.
+# Fluxo (modelo do professor):
+#   Leitura (Excel) -> DataFrame -> Converte p/ DICT -> análises -> gráficos
+#
+# Definições (as mesmas das planilhas do professor e da turma):
+#   Rigidez K      = média de F/δ das 5 cargas de cada mola (kgf/mm)
+#   Ductilidade D  = δ/C na 5ª carga (a mais alta), em %
+# Nenhuma carga e nenhuma mola é removida.
 # ============================================================
 
 # Carregamento das bibliotecas
@@ -16,180 +20,226 @@ import seaborn as sb
 from matplotlib.ticker import FuncFormatter
 from scipy import stats
 
-# OBS: caso não rode, verifique se o pacote openpyxl foi instalado
+# OBS: para instalar as bibliotecas: pip install -r requirements.txt
 
 # Pasta do programa (planilhas e resultados ficam aqui)
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # ------------------------------------------------------------
-# Entrada de dados
+# 1. Leitura (Excel) -> DataFrame
 # ------------------------------------------------------------
-arquivo_testes = "Planilha_Python_CIDA_2.xlsx"     # testes próprios
-arquivo_professor = "experimento.xlsx"             # dados do professor
+arquivo_turma = "Planilha_Python_CIDA_2.xlsx"      # planilha da turma
+arquivo_professor = "experimento.xlsx"             # planilha do professor
 
-# --- Testes próprios ---
-# tabela1: resumo, uma linha por mola (aba Página1)
-tabela1_testes = pd.read_excel(arquivo_testes, sheet_name="Página1", header=0, usecols="A:K")
-tabela1_testes = tabela1_testes.rename(columns={"n": "N", "m": "M"})
+# --- Turma ---
+# Página1: uma linha por mola; K e D já calculados na planilha (usados só na conferência)
+tabela1_turma = pd.read_excel(arquivo_turma, sheet_name="Página1", header=0, usecols="A:L")
+tabela1_turma = tabela1_turma.rename(columns={"n": "N", "m": "M", "K": "K_planilha", "D": "D_planilha"})
 
-# tabela2: medições, 5 cargas por mola (aba Página2), colunas de fórmula K e L não são lidas
-tabela2_testes = pd.read_excel(arquivo_testes, sheet_name="Página2", header=0, usecols="A:J")
-tabela2_testes.columns = ["ID", "C", "h", "t", "L", "N", "Ltot", "M", "F", "delta"]
+# Página2: as 5 cargas de cada mola; as colunas de fórmula K e L não são lidas
+tabela2_turma = pd.read_excel(arquivo_turma, sheet_name="Página2", header=0, usecols="A:J")
+tabela2_turma.columns = ["ID", "C", "h", "t", "L", "N", "Ltot", "M", "F", "delta"]
 
 # A coluna ID só está preenchida em uma linha de cada mola.
-# Por isso, cada linha recebe o ID da mola, identificada pela geometria (mesmas 7 medidas).
+# Cada linha recebe o ID da mola, identificada pela geometria (mesmas 7 medidas).
 geo = ["C", "h", "t", "L", "N", "Ltot", "M"]
-tabela2_testes["grupo"] = tabela2_testes.groupby(geo, sort=False).ngroup()
-tabela2_testes["ID"] = tabela2_testes["grupo"].map(
-    tabela2_testes.dropna(subset=["ID"]).groupby("grupo")["ID"].first())
+tabela2_turma["grupo"] = tabela2_turma.groupby(geo, sort=False).ngroup()
+tabela2_turma["ID"] = tabela2_turma["grupo"].map(
+    tabela2_turma.dropna(subset=["ID"]).groupby("grupo")["ID"].first())
 
-# --- Dados do professor ---
-# tabela1: resumo, uma linha por mola (aba tabela1; os dados começam em B2)
+# --- Professor ---
+# tabela1: uma linha por mola (dados a partir de B2); K e D da planilha só para conferência.
+# Na planilha do professor, D está em fração (δ/C): multiplica por 100 para ficar em %.
 tabela1_professor = pd.read_excel(arquivo_professor, sheet_name="tabela1", header=1, usecols="B:K")
-tabela1_professor = tabela1_professor.rename(columns={"n": "N", "m": "M"})
+tabela1_professor = tabela1_professor.rename(columns={"n": "N", "m": "M", "K": "K_planilha", "D": "D_planilha"})
+tabela1_professor["D_planilha"] = tabela1_professor["D_planilha"] * 100
 
-# tabela2: medições (aba tabela2); as colunas de fórmula rigidez e dutilidade não são lidas
+# tabela2: as 5 cargas de cada mola; as colunas de fórmula rigidez e dutilidade não são lidas
 tabela2_professor = pd.read_excel(arquivo_professor, sheet_name="tabela2", header=1, usecols="B:D")
 tabela2_professor.columns = ["ID", "F", "delta"]
 
-# Esta aba não traz a geometria: o comprimento C de cada mola vem da tabela1, pelo ID
-tabela2_professor["C"] = tabela2_professor["ID"].map(tabela1_professor.set_index("ID")["C"])
-
-# --- Junção das duas planilhas (só as colunas que existem nas duas) ---
-tabela1_testes["origem"] = "Testes próprios"
+# --- Junção das duas planilhas, com a coluna origem ---
+tabela1_turma["origem"] = "Turma"
 tabela1_professor["origem"] = "Professor"
-tabela2_testes["origem"] = "Testes próprios"
+tabela2_turma["origem"] = "Turma"
 tabela2_professor["origem"] = "Professor"
-colunas1 = ["ID", "C", "h", "t", "L", "N", "Ltot", "M", "origem"]
-colunas2 = ["ID", "C", "F", "delta", "origem"]
-tabela1_original = pd.concat([tabela1_testes[colunas1], tabela1_professor[colunas1]], ignore_index=True)
-tabela2_original = pd.concat([tabela2_testes[colunas2], tabela2_professor[colunas2]], ignore_index=True)
-tabela1_original["ID"] = tabela1_original["ID"].astype(int)
-tabela2_original["ID"] = tabela2_original["ID"].astype(int)
+colunas1 = ["ID", "origem"] + geo + ["K_planilha", "D_planilha"]
+colunas2 = ["ID", "origem", "F", "delta"]
+tabela1_df = pd.concat([tabela1_turma[colunas1], tabela1_professor[colunas1]], ignore_index=True)
+tabela2_df = pd.concat([tabela2_turma[colunas2], tabela2_professor[colunas2]], ignore_index=True)
+tabela1_df["ID"] = tabela1_df["ID"].astype(int)
+tabela2_df["ID"] = tabela2_df["ID"].astype(int)
 
-# Colunas calculadas em cada medição
-tabela2_original["rigidez"] = tabela2_original["F"] / tabela2_original["delta"]        # K = F/δ (kgf/mm)
-tabela2_original["deformacao"] = tabela2_original["delta"] / tabela2_original["C"] * 100  # δ/C × 100 (%)
-
-# A maior carga de cada mola é a medição até o escoamento
-maior_carga = tabela2_original.groupby("ID")["F"].transform("max")
-tabela2_original["escoamento"] = tabela2_original["F"] == maior_carga
+# Observações registradas sobre molas específicas (nada é removido por causa delas)
+OBSERVACOES = {
+    58: "5ª carga: ruptura relatada; F/δ desse ponto é 2,5x o das 4 cargas anteriores. "
+        "Conferir a força no registro da máquina em δ = 28,6 mm",
+}
 
 # ------------------------------------------------------------
-# Processamento dos dados
+# 2. Converte p/ DICT
 # ------------------------------------------------------------
-# a) Resultados de cada mola
-resultados = []
-for id_mola in tabela1_original["ID"]:
-    medidas = tabela2_original[tabela2_original["ID"] == id_mola]
-    menores = medidas[~medidas["escoamento"]]
-    esc = medidas[medidas["escoamento"]].iloc[0]
+tabela1_dict = tabela1_df.to_dict("list")     # uma lista por coluna
+tabela2_dict = tabela2_df.to_dict("list")
 
-    # Rigidez K_reg: coeficiente angular da reta F × δ nas quatro cargas menores
-    ajuste = stats.linregress(menores["delta"], menores["F"])
+# ------------------------------------------------------------
+# 3. Análises (a partir dos dicionários)
+# ------------------------------------------------------------
+# a) F/δ de cada medição
+tabela2_dict["rigidez"] = [f / d for f, d in zip(tabela2_dict["F"], tabela2_dict["delta"])]
 
-    # Mesma reta com as cinco cargas, só para comparar o efeito do ponto de escoamento
-    ajuste_5 = stats.linregress(medidas["delta"], medidas["F"])
+# b) K e D de cada mola, com o IC 95% da média das 5 razões F/δ
+calculo = {"ID": [], "K": [], "K_dp": [], "K_IC95_inf": [], "K_IC95_sup": [],
+           "F_5": [], "delta_5": [], "D": [], "observacao": []}
+for i, id_mola in enumerate(tabela1_dict["ID"]):
+    linhas = [j for j, x in enumerate(tabela2_dict["ID"]) if x == id_mola]
+    if len(linhas) != 5:
+        raise ValueError(f"A mola ID {id_mola} tem {len(linhas)} cargas, e não 5.")
+    cargas = sorted((tabela2_dict["F"][j], tabela2_dict["delta"][j]) for j in linhas)  # da menor para a maior
+    secantes = np.array([f / d for f, d in cargas])
+    k = secantes.mean()
+    dp = secantes.std(ddof=1)
+    ic_inf, ic_sup = stats.t.interval(0.95, len(secantes) - 1, loc=k, scale=dp / np.sqrt(len(secantes)))
+    f5, d5 = cargas[-1]                                   # 5ª carga, a mais alta
+    calculo["ID"].append(id_mola)
+    calculo["K"].append(k)
+    calculo["K_dp"].append(dp)
+    calculo["K_IC95_inf"].append(ic_inf)
+    calculo["K_IC95_sup"].append(ic_sup)
+    calculo["F_5"].append(f5)
+    calculo["delta_5"].append(d5)
+    calculo["D"].append(d5 / tabela1_dict["C"][i] * 100)
+    calculo["observacao"].append(OBSERVACOES.get(id_mola, ""))
 
-    # Rigidez secante média das quatro cargas menores e seu intervalo de confiança de 95%
-    secante = menores["rigidez"].to_numpy()
-    ic_inf, ic_sup = stats.t.interval(0.95, len(secante) - 1, loc=secante.mean(), scale=stats.sem(secante))
+# DataFrame de resultados, só para salvar e desenhar (as contas acima usam os dicionários)
+resultado = tabela1_df.merge(pd.DataFrame(calculo), on="ID")
 
-    resultados.append({
-        "ID": id_mola,
-        "K_reg": ajuste.slope,
-        "intercepto": ajuste.intercept,
-        "R2": ajuste.rvalue ** 2,
-        "K_reg_5_cargas": ajuste_5.slope,
-        "R2_5_cargas": ajuste_5.rvalue ** 2,
-        "K_sec_media": secante.mean(),
-        "K_sec_ic_inf": ic_inf,
-        "K_sec_ic_sup": ic_sup,
-        "F_esc": esc["F"],
-        "delta_esc": esc["delta"],
-        "def_esc": esc["deformacao"],
-        "K_sec_esc": esc["rigidez"],
-        "var_K_esc": (esc["rigidez"] / secante.mean() - 1) * 100,   # variação no escoamento (%)
-    })
-tabela1_df = tabela1_original.merge(pd.DataFrame(resultados), on="ID")
-tabela1_dict = tabela1_df.to_dict('list')     # Converte para um dicionário de listas
-tabela2_dict = tabela2_original.to_dict('list')
+# c) Conferência com os valores já calculados nas planilhas, com 4 casas decimais
+resultado["K_confere"] = resultado["K"].round(4) == resultado["K_planilha"].round(4)
+resultado["D_confere"] = resultado["D"].round(4) == resultado["D_planilha"].round(4)
+# O professor arredondou D (em fração) para 3 casas: em %, a precisão dele é de 0,1 ponto
+eh_prof = resultado["origem"] == "Professor"
+resultado.loc[eh_prof, "D_confere"] = (resultado.loc[eh_prof, "D"] - resultado.loc[eh_prof, "D_planilha"]).abs() <= 0.05
+# O professor arredondou K para 5 casas: compara com tolerância de meia unidade da 5ª casa
+resultado.loc[eh_prof, "K_confere"] = (resultado.loc[eh_prof, "K"] - resultado.loc[eh_prof, "K_planilha"]).abs() <= 0.5e-5 + 1e-12
 
-# b) Grupos analisados: todas as molas e cada planilha
-grupos = {"Todas as molas": tabela1_df}
-for origem in tabela1_df["origem"].unique():
-    grupos[origem] = tabela1_df[tabela1_df["origem"] == origem]
+# d) Grupos analisados: todas as molas e cada origem
+grupos = {"Todas as molas": resultado}
+for origem in ["Turma", "Professor"]:
+    grupos[origem] = resultado[resultado["origem"] == origem]
 
-# c) Estatística descritiva de K_reg
+# e) Estatística descritiva de K e D
 descritiva = []
 for nome, dados in grupos.items():
-    k = dados["K_reg"]
-    ic_inf, ic_sup = stats.t.interval(0.95, len(k) - 1, loc=k.mean(), scale=stats.sem(k))
-    descritiva.append({
-        "grupo": nome, "n": len(k), "media": k.mean(), "media_N_mm": k.mean() * 9.80665,
-        "desvio_padrao": k.std(), "CV_pct": k.std() / k.mean() * 100,
-        "IC95_inf": ic_inf, "IC95_sup": ic_sup, "mediana": k.median(),
-        "minimo": k.min(), "maximo": k.max(), "shapiro_p": stats.shapiro(k).pvalue,
-    })
+    for var in ["K", "D"]:
+        x = dados[var]
+        ic_inf, ic_sup = stats.t.interval(0.95, len(x) - 1, loc=x.mean(), scale=stats.sem(x))
+        descritiva.append({
+            "grupo": nome, "variavel": var, "n": len(x), "media": x.mean(), "desvio_padrao": x.std(),
+            "CV_pct": x.std() / x.mean() * 100, "IC95_inf": ic_inf, "IC95_sup": ic_sup,
+            "mediana": x.median(), "minimo": x.min(), "maximo": x.max(), "shapiro_p": stats.shapiro(x).pvalue,
+        })
 descritiva_df = pd.DataFrame(descritiva)
 
-# d) Correlações entre geometria e K_reg (e entre deformação no escoamento e K_reg)
+
+# f) Teste de outlier nas 17 molas: Grubbs (α = 0,05) e critério do boxplot (IQR)
+def grubbs_iterativo(valores, ids, alfa=0.05):
+    """Grubbs bilateral, repetido: retira o valor detectado e testa de novo, até não detectar.
+    A retirada vale só dentro do teste; nenhum dado é apagado da análise."""
+    valores, ids = list(valores), list(ids)
+    etapas = []
+    while len(valores) >= 3:
+        x = np.array(valores)
+        n = len(x)
+        i = int(np.argmax(np.abs(x - x.mean())))
+        g = abs(x[i] - x.mean()) / x.std(ddof=1)
+        t = stats.t.ppf(1 - alfa / (2 * n), n - 2)
+        g_critico = (n - 1) / np.sqrt(n) * np.sqrt(t ** 2 / (n - 2 + t ** 2))
+        etapas.append({"etapa": len(etapas) + 1, "n": n, "ID": ids[i], "valor": x[i],
+                       "estatistica": g, "limite": g_critico, "outlier": g > g_critico})
+        if g <= g_critico:
+            break
+        valores.pop(i)
+        ids.pop(i)
+    return etapas
+
+
+outliers = []
+limites_iqr = {}
+for var in ["K", "D"]:
+    for etapa in grubbs_iterativo(resultado[var], resultado["ID"]):
+        outliers.append({"variavel": var, "metodo": "Grubbs (α = 0,05)", **etapa})
+    q1, q3 = resultado[var].quantile([0.25, 0.75])
+    iqr = q3 - q1
+    lim_inf, lim_sup = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    limites_iqr[var] = (q1, q3, lim_inf, lim_sup)
+    for _, mola in resultado.iterrows():
+        if mola[var] < lim_inf or mola[var] > lim_sup:
+            outliers.append({"variavel": var, "metodo": "Boxplot (1,5 × IQR)", "etapa": None,
+                             "n": len(resultado), "ID": mola["ID"], "valor": mola[var],
+                             "estatistica": None, "limite": lim_sup if mola[var] > lim_sup else lim_inf,
+                             "outlier": True})
+outliers_df = pd.DataFrame(outliers)
+ids_outlier = {var: sorted(outliers_df[(outliers_df["variavel"] == var) & outliers_df["outlier"]]["ID"].unique())
+               for var in ["K", "D"]}
+
+# g) Correlação de Pearson entre geometria, K e D
 correlacoes = []
-for nome, dados in grupos.items():
-    for var in geo + ["def_esc"]:
-        pearson = stats.pearsonr(dados[var], dados["K_reg"])
-        spearman = stats.spearmanr(dados[var], dados["K_reg"])
-        log_log = stats.pearsonr(np.log(dados[var]), np.log(dados["K_reg"]))
-        correlacoes.append({
-            "grupo": nome, "n": len(dados), "variavel": var,
-            "pearson_r": pearson[0], "pearson_p": pearson[1],
-            "spearman_rho": spearman[0], "spearman_p": spearman[1],
-            "log_log_r": log_log[0],
-        })
+for alvo in ["K", "D"]:
+    for var in geo:
+        r, p = stats.pearsonr(resultado[var], resultado[alvo])
+        rho, p_s = stats.spearmanr(resultado[var], resultado[alvo])
+        correlacoes.append({"alvo": alvo, "variavel": var, "n": len(resultado), "pearson_r": r, "pearson_p": p,
+                            "spearman_rho": rho, "spearman_p": p_s})
 correlacoes_df = pd.DataFrame(correlacoes)
 
-# e) Comparação da rigidez entre as duas origens
-comparacao = stats.mannwhitneyu(grupos["Testes próprios"]["K_reg"], grupos["Professor"]["K_reg"])
-
-# Salva as tabelas de resultados (formato que o Excel em português abre direto)
-tabela1_df.to_csv("resumo_por_mola.csv", sep=";", decimal=",", index=False, encoding="utf-8-sig")
-correlacoes_df.to_csv("correlacoes.csv", sep=";", decimal=",", index=False, encoding="utf-8-sig")
-descritiva_df.to_csv("estatistica_descritiva.csv", sep=";", decimal=",", index=False, encoding="utf-8-sig")
+# Salva as tabelas (separador ; e vírgula decimal, que o Excel em português abre direto)
+salvar = dict(sep=";", decimal=",", index=False, encoding="utf-8-sig")
+colunas_resumo = ["ID", "origem"] + geo + ["K", "K_dp", "K_IC95_inf", "K_IC95_sup", "F_5", "delta_5", "D",
+                                           "K_planilha", "D_planilha", "K_confere", "D_confere", "observacao"]
+resultado[colunas_resumo].round({"K": 4, "D": 4}).to_csv("resumo_por_mola.csv", **salvar)
+descritiva_df.to_csv("estatistica_descritiva.csv", **salvar)
+outliers_df.to_csv("outliers.csv", **salvar)
+correlacoes_df.to_csv("correlacoes.csv", **salvar)
 
 # ------------------------------------------------------------
-# Apresentação dos resultados
+# 4. Apresentação dos resultados
 # ------------------------------------------------------------
 print("\nApresentação do dicionário lido - tabela1: ")
 print(tabela1_dict)
 print("\nApresentação do dicionário lido - tabela2: ")
 print(tabela2_dict)
 
-print("\nRigidez por mola, nas quatro cargas menores (kgf/mm):")
-for _, mola in tabela1_df.iterrows():
-    print(f"  ID {int(mola['ID'])} ({mola['origem']}): K_reg = {mola['K_reg']:.4f}  R² = {mola['R2']:.4f}  "
-          f"K_sec = {mola['K_sec_media']:.4f}  IC95% [{mola['K_sec_ic_inf']:.4f}; {mola['K_sec_ic_sup']:.4f}]")
+print("\nK e D por mola (4 casas decimais) e conferência com as planilhas:")
+for _, mola in resultado.iterrows():
+    print(f"  ID {mola['ID']:>3} ({mola['origem']:<9}) K = {mola['K']:.4f} kgf/mm "
+          f"[planilha {mola['K_planilha']:.4f}: {'confere' if mola['K_confere'] else 'NÃO CONFERE'}]   "
+          f"D = {mola['D']:.4f}% [planilha {mola['D_planilha']:.4f}: "
+          f"{'confere' if mola['D_confere'] else 'NÃO CONFERE'}]")
+    if mola["observacao"]:
+        print(f"      Obs.: {mola['observacao']}")
+if not (resultado["K_confere"].all() and resultado["D_confere"].all()):
+    print("\n  ATENÇÃO: há valores que não conferem com as planilhas.")
 
-print("\nEscoamento por mola:")
-for _, mola in tabela1_df.iterrows():
-    print(f"  ID {int(mola['ID'])}: F = {mola['F_esc']:.3f} kgf  δ = {mola['delta_esc']:.2f} mm  "
-          f"δ/C = {mola['def_esc']:.1f}%  variação de F/δ = {mola['var_K_esc']:+.1f}%")
-
-print("\nEstatística descritiva de K_reg:")
+print("\nEstatística descritiva:")
 print(descritiva_df.round(4).to_string(index=False))
 
-print("\nCorrelações com K_reg:")
-print(correlacoes_df.round(3).to_string(index=False))
+print("\nTeste de outlier (nenhuma mola é removida; só registro):")
+print(outliers_df.round(4).to_string(index=False))
+for var, (q1, q3, lim_inf, lim_sup) in limites_iqr.items():
+    print(f"  {var}: Q1 = {q1:.4f}  Q3 = {q3:.4f}  limites do boxplot = [{lim_inf:.4f}; {lim_sup:.4f}]")
+for var, ids in ids_outlier.items():
+    print(f"  {var}: molas apontadas como outlier = {ids if ids else 'nenhuma'}")
 
-print(f"\nK_reg, testes próprios x professor (Mann-Whitney): p = {comparacao.pvalue:.3f}")
-print(f"Nível de significância com correção de Bonferroni (7 dimensões): {0.05 / 7:.4f}")
+print("\nCorrelações com K e D:")
+print(correlacoes_df.round(4).to_string(index=False))
 
 # ------------------------------------------------------------
-# Gráficos
+# 5. Gráficos (17 molas)
 # ------------------------------------------------------------
-# Aparência comum: as duas origens têm sempre a mesma cor e o mesmo marcador
-CORES = {"Testes próprios": "#2a78d6", "Professor": "#eb6834"}
-MARCADORES = {"Testes próprios": "o", "Professor": "s"}
-CINZA = "#898781"
+CORES = {"Turma": "#2a78d6", "Professor": "#eb6834"}
+MARCADORES = {"Turma": "o", "Professor": "s"}
+PRETO = "#0b0b0b"
 plt.rcParams.update({
     "font.size": 10, "axes.spines.top": False, "axes.spines.right": False,
     "axes.edgecolor": "#c3c2b7", "axes.grid": True, "grid.color": "#e1e0d9", "grid.linewidth": 0.6,
@@ -207,158 +257,100 @@ def virgula(valor, casas=2):
 formato_virgula = FuncFormatter(lambda valor, _: f"{valor:g}".replace(".", ","))
 
 
-def eixos_com_virgula(eixo):
+def dispersao(var_x, var_y, rotulo_x, rotulo_y, arquivo):
+    """Dispersão com as duas origens, Pearson no título e os outliers de var_y identificados."""
+    plt.figure()
+    eixo = plt.gca()
+    for origem in ["Turma", "Professor"]:
+        dados = grupos[origem]
+        eixo.scatter(dados[var_x], dados[var_y], s=45, color=CORES[origem], marker=MARCADORES[origem],
+                     edgecolor="white", linewidth=0.8, label=origem)
+    for _, mola in resultado[resultado["ID"].isin(ids_outlier[var_y])].iterrows():
+        eixo.annotate(f"ID {mola['ID']}", (mola[var_x], mola[var_y]), xytext=(6, 0), textcoords="offset points",
+                      va="center", fontsize=9, color=PRETO)
+    r, p = stats.pearsonr(resultado[var_x], resultado[var_y])
+    eixo.set_title(f"{var_y} × {var_x}, 17 molas (Pearson r = {virgula(r)}; p = {virgula(p, 3)})")
+    eixo.set_xlabel(rotulo_x)
+    eixo.set_ylabel(rotulo_y)
     eixo.xaxis.set_major_formatter(formato_virgula)
     eixo.yaxis.set_major_formatter(formato_virgula)
+    eixo.legend(frameon=False)
+    plt.savefig(arquivo)
 
 
-def correlacao_todas(var):
-    """Pearson r e p de uma variável, com todas as molas."""
-    return stats.pearsonr(tabela1_df[var], tabela1_df["K_reg"])
+# Dispersões do modelo do professor
+dispersao("h", "K", "Espessura h (mm)", "Rigidez K (kgf/mm)", "grafico_K_x_h.png")
+dispersao("t", "K", "Altura t (mm)", "Rigidez K (kgf/mm)", "grafico_K_x_t.png")
+dispersao("L", "D", "Passo L (mm)", "Ductilidade D (%)", "grafico_D_x_L.png")
 
-
-def dispersao(eixo, var, y="K_reg"):
-    for origem, dados in grupos.items():
-        if origem != "Todas as molas":
-            eixo.scatter(dados[var], dados[y], s=45, color=CORES[origem], marker=MARCADORES[origem],
-                         edgecolor="white", linewidth=0.8, label=origem)
-    eixos_com_virgula(eixo)
-
-
-# Dispersão da rigidez em função da altura t (modelo do professor)
-plt.figure()
-dispersao(plt.gca(), "t")
-r, p = correlacao_todas("t")
-plt.title(f"Rigidez tende a aumentar com a altura (r = {virgula(r)}; p = {virgula(p, 3)})")
-plt.xlabel("Altura da mola t (mm)")
-plt.ylabel("Rigidez K_reg (kgf/mm)")
-plt.legend(frameon=False)
-plt.savefig("grafico_K_x_t.png")
-
-# Dispersão da rigidez em função da espessura h
-plt.figure()
-dispersao(plt.gca(), "h")
-r, p = correlacao_todas("h")
-plt.title(f"Espessura não tem correlação significativa com a rigidez (r = {virgula(r)}; p = {virgula(p, 3)})")
-plt.xlabel("Espessura h (mm)")
-plt.ylabel("Rigidez K_reg (kgf/mm)")
-plt.legend(frameon=False)
-plt.savefig("grafico_K_x_h.png")
-
-# Dispersão da deformação relativa no escoamento em função do passo L
-plt.figure()
-dispersao(plt.gca(), "L", "def_esc")
-r, p = stats.pearsonr(tabela1_df["L"], tabela1_df["def_esc"])
-plt.title(f"Deformação no escoamento e passo (r = {virgula(r)}; p = {virgula(p, 3)})")
-plt.xlabel("Passo L (mm)")
-plt.ylabel("Deformação relativa no escoamento δ/C (%)")
-plt.legend(frameon=False)
-plt.savefig("grafico_deformacao_x_L.png")
-
-# Rigidez secante por mola: cargas menores e maior carga (escoamento)
-ordem = tabela1_df.sort_values("K_reg", ascending=False)["ID"].tolist()
-plt.figure(figsize=(10, 4.2))
+# Boxplot de K por mola: as 5 razões F/δ de cada mola, da mais rígida para a menos rígida
+ordem = resultado.sort_values("K", ascending=False)
+medidas = pd.DataFrame(tabela2_dict)
+plt.figure(figsize=(10, 4.4))
 eixo = plt.gca()
-for posicao, id_mola in enumerate(ordem):
-    medidas = tabela2_original[tabela2_original["ID"] == id_mola]
-    origem = medidas["origem"].iloc[0]
-    pontos = medidas[~medidas["escoamento"]]
-    eixo.scatter([posicao] * len(pontos), pontos["rigidez"], s=22, color=CORES[origem],
-                 marker=MARCADORES[origem], alpha=0.8, zorder=3)
-    eixo.scatter(posicao, medidas[medidas["escoamento"]]["rigidez"], s=48, marker="X", color="#0b0b0b",
-                 edgecolor="white", linewidth=0.6, zorder=4)
-mola_58 = tabela1_df[tabela1_df["ID"] == 58].iloc[0]
-eixo.annotate(f"ID 58: {virgula(mola_58['var_K_esc'], 0)}% acima das cargas menores",
-              (ordem.index(58), mola_58["K_sec_esc"]), xytext=(10, 6), textcoords="offset points",
-              fontsize=9, color="#0b0b0b")
+caixas = eixo.boxplot([medidas[medidas["ID"] == i]["rigidez"] for i in ordem["ID"]], widths=0.55,
+                      patch_artist=True, medianprops={"color": PRETO, "linewidth": 1.2},
+                      flierprops={"marker": "o", "markersize": 4, "markerfacecolor": PRETO, "markeredgecolor": PRETO})
+for caixa, origem in zip(caixas["boxes"], ordem["origem"]):
+    caixa.set_facecolor(CORES[origem])
+    caixa.set_alpha(0.75)
+    caixa.set_edgecolor(CORES[origem])
+eixo.scatter(range(1, len(ordem) + 1), ordem["K"], marker="D", s=16, color="white", edgecolor=PRETO,
+             linewidth=0.8, zorder=4, label="K (média das 5 cargas)")
 eixo.set_yscale("log")
 eixo.yaxis.set_major_formatter(formato_virgula)
-eixo.set_xticks(range(len(ordem)), [str(i) for i in ordem])
-eixo.set_title("Na maior carga, F/δ muda pouco na maioria das molas; a ID 58 é a exceção")
-eixo.set_xlabel("ID da mola (da maior para a menor rigidez)")
-eixo.set_ylabel("Rigidez secante F/δ (kgf/mm, escala log)")
-for origem in CORES:
-    eixo.scatter([], [], s=22, color=CORES[origem], marker=MARCADORES[origem], label=f"Cargas menores: {origem.lower()}")
-eixo.scatter([], [], s=48, marker="X", color="#0b0b0b", label="Maior carga (escoamento)")
-eixo.legend(frameon=False, loc="upper right")
-plt.savefig("grafico_rigidez_secante.png")
-
-# Deformação relativa no escoamento por mola
-plt.figure(figsize=(10, 3.6))
-eixo = plt.gca()
-ordenado = tabela1_df.sort_values("def_esc", ascending=False)
-posicoes = range(len(ordenado))
-eixo.bar(posicoes, ordenado["def_esc"], width=0.55, color=[CORES[o] for o in ordenado["origem"]])
-eixo.set_xticks(list(posicoes), [str(i) for i in ordenado["ID"]])
+eixo.set_xticks(range(1, len(ordem) + 1), [str(i) for i in ordem["ID"]])
 eixo.grid(axis="x", visible=False)
-eixo.yaxis.set_major_formatter(formato_virgula)
-eixo.set_title(f"Deformação no escoamento variou de {virgula(ordenado['def_esc'].min(), 0)}% a "
-               f"{virgula(ordenado['def_esc'].max(), 0)}%")
-eixo.set_xlabel("ID da mola")
-eixo.set_ylabel("δ/C no escoamento (%)")
+eixo.set_title("F/δ das 5 cargas de cada mola")
+eixo.set_xlabel("ID da mola (da maior para a menor rigidez)")
+eixo.set_ylabel("F/δ (kgf/mm, escala log)")
 for origem, cor in CORES.items():
-    eixo.bar(0, 0, color=cor, label=origem)
-eixo.legend(frameon=False)
-plt.savefig("grafico_deformacao_escoamento.png")
+    eixo.bar(0, 0, color=cor, alpha=0.75, label=origem)
+eixo.set_xlim(0.4, len(ordem) + 0.6)
+eixo.legend(frameon=False, loc="upper right")
+plt.savefig("grafico_boxplot_K_por_mola.png")
 
-# Carga × alongamento: reta das quatro cargas menores e ponto de escoamento, um painel por origem
-figura, paineis = plt.subplots(1, 2, figsize=(10, 4.4), sharex=True, sharey=True)
-for eixo, origem in zip(paineis, ["Testes próprios", "Professor"]):
-    for _, mola in grupos[origem].iterrows():
-        medidas = tabela2_original[tabela2_original["ID"] == mola["ID"]]
-        pontos = medidas[~medidas["escoamento"]]
-        destaque = mola["ID"] == 58
-        cor = "#0b0b0b" if destaque else CORES[origem]
-        x_reta = np.array([0, mola["delta_esc"]])
-        eixo.plot(x_reta, mola["intercepto"] + mola["K_reg"] * x_reta, color=cor, linewidth=1.1, alpha=0.75)
-        eixo.scatter(pontos["delta"], pontos["F"], s=18, color=cor, marker=MARCADORES[origem], zorder=3)
-        eixo.scatter(mola["delta_esc"], mola["F_esc"], s=48, marker="X", color=cor, edgecolor="white",
-                     linewidth=0.6, zorder=4)
-        if destaque or mola["F_esc"] >= 3:
-            eixo.annotate(f"ID {int(mola['ID'])}", (mola["delta_esc"], mola["F_esc"]), xytext=(7, 0),
-                          textcoords="offset points", va="center", fontsize=9, color="#0b0b0b")
-    eixo.set_title(f"{origem} (n = {len(grupos[origem])})")
-    eixo.set_xlabel("Alongamento δ (mm)")
-    eixos_com_virgula(eixo)
-paineis[0].set_ylabel("Carga F (kgf)")
-paineis[0].scatter([], [], s=18, color=CINZA, label="Cargas menores")
-paineis[0].scatter([], [], s=48, marker="X", color=CINZA, label="Maior carga (escoamento)")
-paineis[0].plot([], [], color=CINZA, linewidth=1.1, label="Reta das cargas menores")
-paineis[0].legend(frameon=False, loc="upper right")
+# Boxplot de K e de D nas 17 molas, com os limites do critério IQR e os outliers identificados
+figura, paineis = plt.subplots(1, 2, figsize=(9, 4.4))
+for eixo, var, rotulo in zip(paineis, ["K", "D"], ["Rigidez K (kgf/mm)", "Ductilidade D (%)"]):
+    eixo.boxplot(resultado[var], widths=0.4, showfliers=False, medianprops={"color": PRETO},
+                 boxprops={"color": "#52514e"}, whiskerprops={"color": "#52514e"}, capprops={"color": "#52514e"})
+    deslocamento = np.linspace(-0.12, 0.12, len(resultado))
+    for (_, mola), dx in zip(resultado.sort_values(var).iterrows(), deslocamento):
+        eixo.scatter(1 + dx, mola[var], s=30, color=CORES[mola["origem"]], marker=MARCADORES[mola["origem"]],
+                     edgecolor="white", linewidth=0.6, zorder=3)
+        if mola["ID"] in ids_outlier[var]:
+            eixo.annotate(f"ID {mola['ID']}", (1 + dx, mola[var]), xytext=(8, 0), textcoords="offset points",
+                          va="center", fontsize=9, color=PRETO)
+    lim_sup = limites_iqr[var][3]
+    if lim_sup < resultado[var].max() * 1.05:
+        eixo.axhline(lim_sup, color="#898781", linewidth=0.9, linestyle="--")
+        eixo.annotate("limite do boxplot (Q3 + 1,5·IQR)", (1.5, lim_sup), xytext=(0, 4), textcoords="offset points",
+                      ha="right", fontsize=8, color="#52514e")
+    eixo.set_xticks([])
+    eixo.grid(axis="x", visible=False)
+    eixo.set_ylabel(rotulo)
+    eixo.yaxis.set_major_formatter(formato_virgula)
+    ids = ids_outlier[var]
+    eixo.set_title(f"{var}: outlier em " + ", ".join(f"ID {i}" for i in ids) if ids else f"{var}: nenhum outlier")
+for origem in CORES:
+    paineis[0].scatter([], [], s=30, color=CORES[origem], marker=MARCADORES[origem], label=origem)
+paineis[0].legend(frameon=False, loc="upper left")
 figura.tight_layout()
-figura.savefig("grafico_carga_alongamento.png")
-
-# Rigidez contra quatro dimensões
-figura, paineis = plt.subplots(2, 2, figsize=(10, 6.6), sharey=True)
-nomes = {"t": "Altura t (mm)", "L": "Passo L (mm)", "N": "Espiras N", "Ltot": "Largura Ltot (mm)"}
-for eixo, (var, rotulo) in zip(paineis.flat, nomes.items()):
-    dispersao(eixo, var)
-    r, p = correlacao_todas(var)
-    eixo.set_title(f"r = {virgula(r)}; p = {virgula(p, 3)}")
-    eixo.set_xlabel(rotulo)
-    if var == "N":
-        eixo.set_xticks([3, 4, 5])
-paineis[0, 0].set_ylabel("Rigidez K_reg (kgf/mm)")
-paineis[1, 0].set_ylabel("Rigidez K_reg (kgf/mm)")
-paineis[0, 0].legend(frameon=False)
-figura.tight_layout()
-figura.savefig("grafico_K_x_geometria.png")
+figura.savefig("grafico_boxplot_K_D.png")
 
 # Matriz de correlação de Pearson
 plt.figure(figsize=(7.4, 6.2))
-matriz = tabela1_df[geo + ["def_esc", "K_reg"]].corr()
-nomes_matriz = geo + ["δ/C esc.", "K_reg"]
-anotacoes = matriz.map(lambda valor: virgula(valor))
-sb.heatmap(matriz, annot=anotacoes, fmt="", cmap="RdBu_r", vmin=-1, vmax=1, square=True, linewidths=1.5,
-           linecolor="white", xticklabels=nomes_matriz, yticklabels=nomes_matriz,
-           cbar_kws={"shrink": 0.8, "format": formato_virgula})
+matriz = resultado[geo + ["K", "D"]].corr()
+sb.heatmap(matriz, annot=matriz.map(virgula), fmt="", cmap="RdBu_r", vmin=-1, vmax=1, square=True,
+           linewidths=1.5, linecolor="white", cbar_kws={"shrink": 0.8, "format": formato_virgula})
 plt.grid(False)
-plt.title(f"Matriz de correlação de Pearson (n = {len(tabela1_df)} molas)")
+plt.title(f"Matriz de correlação de Pearson (n = {len(resultado)} molas)")
 plt.savefig("grafico_correlacao.png")
 
 # Matriz de dispersão
-grafico = sb.pairplot(tabela1_df, vars=["h", "t", "L", "N", "Ltot", "K_reg"], hue="origem", palette=CORES,
-                      markers=MARCADORES, height=1.45, diag_kind="hist", plot_kws={"s": 28, "edgecolor": "white"})
+grafico = sb.pairplot(resultado, vars=["h", "t", "L", "N", "Ltot", "K", "D"], hue="origem", palette=CORES,
+                      markers=MARCADORES, height=1.35, diag_kind="hist", plot_kws={"s": 26, "edgecolor": "white"})
 for eixo in grafico.axes.flat:
     eixo.xaxis.set_major_formatter(formato_virgula)
     eixo.yaxis.set_major_formatter(formato_virgula)
